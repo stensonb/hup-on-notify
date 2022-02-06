@@ -7,7 +7,7 @@ RUN apk update && \
     addgroup squid tty && \
     chown squid:squid /etc/squid/squid.conf
 
-COPY hup-on-notify-linux /usr/local/bin
+COPY hup-on-notify-linux /usr/local/bin/hup-on-notify
 
 USER squid
 

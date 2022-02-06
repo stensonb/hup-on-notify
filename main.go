@@ -1,22 +1,30 @@
 package main
 
 import (
+	"flag"
 	"io/ioutil"
 	"log"
+	"os"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/fsnotify/fsnotify"
 )
 
-/*
-const fileToWatch = "../hup-catcher/hup-catcher.conf"
-const pidFile = "../hup-catcher/hup-catcher.pid"
-*/
-const fileToWatch = "/etc/squid/squid.conf"
-const pidFile = "/var/run/squid.pid"
+var (
+	fileToWatch *string
+	pidFile     *string
+)
+
+func init() {
+	fileToWatch = flag.String("fileToWatch", "config.conf", "the file to watch for changes")
+	pidFile = flag.String("pidFile", "pidfile.pid", "the file containing the PID of the process to receive the SIGHUP")
+}
 
 func main() {
+	flag.Parse()
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal(err)
@@ -31,10 +39,21 @@ func main() {
 				if !ok {
 					return
 				}
-				log.Println("event:", event)
+				if event.Op&fsnotify.Remove == fsnotify.Remove ||
+					event.Op&fsnotify.Rename == fsnotify.Rename {
+					// if the file was removed or renamed, linux inotify
+					// removes the watch, so re-add it
+					err = watcher.Add(*fileToWatch)
+					if err != nil {
+						log.Fatal(err)
+					}
+				}
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					sendHup()
-					log.Println("modified file:", event.Name)
+					log.Printf("change detected (%s)\n", event.Name)
+					err := sendHup()
+					if err != nil {
+						log.Printf("failed to send SIGHUP: %v\n", err)
+					}
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -45,30 +64,35 @@ func main() {
 		}
 	}()
 
-	err = watcher.Add(fileToWatch)
+	err = watcher.Add(*fileToWatch)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("%s: %v\n", *fileToWatch, err)
 	}
-	log.Printf("watching %s\n", fileToWatch)
+	log.Printf("watching (%s)\n", *fileToWatch)
 	<-done
 }
 
 func sendHup() error {
-	content, err := ioutil.ReadFile(pidFile)
+	content, err := ioutil.ReadFile(*pidFile)
 	if err != nil {
 		return err
 	}
 
-	pid, err := strconv.Atoi(string(content))
+	pid, err := strconv.Atoi(strings.TrimSuffix(string(content), "\n"))
 	if err != nil {
 		return err
 	}
 
-	err = syscall.Kill(pid, syscall.SIGHUP)
+	process, err := os.FindProcess(pid)
 	if err != nil {
 		return err
 	}
-	log.Printf("sent SIGHUP to %d\n", pid)
+
+	err = process.Signal(syscall.SIGHUP)
+	if err != nil {
+		return err
+	}
+	log.Printf("sent SIGHUP to %d (%s)\n", pid, *pidFile)
 
 	return nil
 }
